@@ -75,23 +75,14 @@ struct tinywl_view {
 	struct tinywl_server *server;
 	struct wlr_xdg_surface *xdg_surface;
 	struct wlr_scene_node *scene_node;
+	struct wlr_scene_node *toplevel_node;
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener destroy;
-	struct wl_listener new_popup;
 	struct wl_listener request_move;
 	struct wl_listener request_resize;
+	struct wl_listener commit;
 	int x, y;
-};
-
-struct tinywl_popup {
-	struct tinywl_view *view;
-	struct wlr_xdg_popup *xdg_popup;
-	struct wlr_scene_node *scene_node;
-	struct wl_listener map;
-	struct wl_listener unmap;
-	struct wl_listener destroy;
-	struct wl_listener new_popup;
 };
 
 struct tinywl_keyboard {
@@ -592,64 +583,30 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	wlr_output_layout_add_auto(server->output_layout, wlr_output);
 }
 
-static void xdg_popup_map(struct wl_listener *listener, void *data) {
-	struct tinywl_popup *popup = wl_container_of(listener, popup, map);
+static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
+	struct tinywl_view *view = wl_container_of(listener, view, commit);
 
-	popup->scene_node = wlr_scene_subsurface_tree_create(
-			popup->view->scene_node, popup->xdg_popup->base->surface);
-	double sx, sy;
-	wlr_xdg_popup_get_position(popup->xdg_popup, &sx, &sy);
-	wlr_scene_node_set_position(popup->scene_node, sx, sy);
-}
-
-static void xdg_popup_unmap(struct wl_listener *listener, void *data) {
-	struct tinywl_popup *popup = wl_container_of(listener, popup, unmap);
-	wlr_scene_node_destroy(popup->scene_node);
-}
-
-static void xdg_popup_destroy(struct wl_listener *listener, void *data) {
-	struct tinywl_popup *popup = wl_container_of(listener, popup, destroy);
-
-	wl_list_remove(&popup->map.link);
-	wl_list_remove(&popup->unmap.link);
-	wl_list_remove(&popup->destroy.link);
-	wl_list_remove(&popup->new_popup.link);
-
-	free(popup);
-}
-
-static void tinywl_popup_create(struct tinywl_view *view,
-		struct wlr_xdg_popup *xdg_popup);
-
-static void xdg_popup_new_popup(struct wl_listener *listener, void *data) {
-	struct tinywl_view *view = wl_container_of(listener, view, new_popup);
-	struct wlr_xdg_popup *xdg_popup = data;
-	tinywl_popup_create(view, xdg_popup);
-}
-
-static void tinywl_popup_create(struct tinywl_view *view,
-		struct wlr_xdg_popup *xdg_popup) {
-	struct tinywl_popup *popup = calloc(1, sizeof(struct tinywl_popup));
-	popup->view = view;
-	popup->xdg_popup = xdg_popup;
-
-	popup->map.notify = xdg_popup_map;
-	wl_signal_add(&xdg_popup->base->events.map, &popup->map);
-	popup->unmap.notify = xdg_popup_unmap;
-	wl_signal_add(&xdg_popup->base->events.unmap, &popup->unmap);
-	popup->destroy.notify = xdg_popup_destroy;
-	wl_signal_add(&xdg_popup->base->events.destroy, &popup->destroy);
-	popup->new_popup.notify = xdg_popup_new_popup;
-	wl_signal_add(&xdg_popup->base->events.new_popup, &popup->new_popup);
+	struct wlr_box geo_box = {0};
+	wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
+	wlr_scene_node_set_position(view->toplevel_node, -geo_box.x, -geo_box.y);
 }
 
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	/* Called when the surface is mapped, or ready to display on-screen. */
 	struct tinywl_view *view = wl_container_of(listener, view, map);
 
-	view->scene_node = wlr_scene_subsurface_tree_create(
-			&view->server->scene->node, view->xdg_surface->surface);
+	struct wlr_scene_tree *view_tree = wlr_scene_tree_create(&view->server->scene->node);
+	view->toplevel_node = wlr_scene_subsurface_tree_create(
+			&view_tree->node, view->xdg_surface->surface);
+	view->scene_node = &view_tree->node;
 	view->scene_node->data = view;
+
+	struct wlr_box geo_box = {0};
+	wlr_xdg_surface_get_geometry(view->xdg_surface, &geo_box);
+	wlr_scene_node_set_position(view->toplevel_node, -geo_box.x, -geo_box.y);
+
+	view->commit.notify = xdg_toplevel_commit;
+	wl_signal_add(&view->xdg_surface->surface->events.commit, &view->commit);
 
 	wl_list_insert(&view->server->views, &view->link);
 
@@ -661,6 +618,7 @@ static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 	struct tinywl_view *view = wl_container_of(listener, view, unmap);
 
 	wlr_scene_node_destroy(view->scene_node);
+	wl_list_remove(&view->commit.link);
 }
 
 static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
@@ -671,17 +629,10 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->map.link);
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->destroy.link);
-	wl_list_remove(&view->new_popup.link);
 	wl_list_remove(&view->request_move.link);
 	wl_list_remove(&view->request_resize.link);
 
 	free(view);
-}
-
-static void xdg_toplevel_new_popup(struct wl_listener *listener, void *data) {
-	struct tinywl_view *view = wl_container_of(listener, view, new_popup);
-	struct wlr_xdg_popup *xdg_popup = data;
-	tinywl_popup_create(view, xdg_popup);
 }
 
 static void begin_interactive(struct tinywl_view *view,
@@ -750,17 +701,39 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 	struct tinywl_server *server =
 		wl_container_of(listener, server, new_xdg_surface);
 	struct wlr_xdg_surface *xdg_surface = data;
-	if (xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		/* New popups are handled by listening to the new_popup
-		 * event on the parent toplevel/popup */
+	if (xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+		/* This check is not strictly necessary as tinywl doesn't implement any
+		 * other shell using xdg popups (e.g. layer shell) */
+		if (!wlr_surface_is_xdg_surface(xdg_surface->popup->parent)) {
+			return;
+		}
+		struct wlr_xdg_surface *parent = wlr_xdg_surface_from_wlr_surface(
+			xdg_surface->popup->parent);
+		struct wlr_scene_node *parent_node;
+		switch (parent->role) {
+			case WLR_XDG_SURFACE_ROLE_TOPLEVEL: {
+				struct tinywl_view *view = parent->data;
+				parent_node = view->scene_node;
+				break;
+			}
+			case WLR_XDG_SURFACE_ROLE_POPUP:
+				parent_node = parent->data;
+				break;
+			case WLR_XDG_SURFACE_ROLE_NONE:
+				return;
+		}
+		xdg_surface->data =
+			wlr_scene_xdg_popup_create(parent_node, xdg_surface->popup);
 		return;
 	}
+	assert(xdg_surface->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL);
 
 	/* Allocate a tinywl_view for this surface */
 	struct tinywl_view *view =
 		calloc(1, sizeof(struct tinywl_view));
 	view->server = server;
 	view->xdg_surface = xdg_surface;
+	xdg_surface->data = view;
 
 	/* Listen to the various events it can emit */
 	view->map.notify = xdg_toplevel_map;
@@ -769,8 +742,6 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xdg_surface->events.unmap, &view->unmap);
 	view->destroy.notify = xdg_toplevel_destroy;
 	wl_signal_add(&xdg_surface->events.destroy, &view->destroy);
-	view->new_popup.notify = xdg_toplevel_new_popup;
-	wl_signal_add(&xdg_surface->events.new_popup, &view->new_popup);
 
 	/* cotd */
 	struct wlr_xdg_toplevel *toplevel = xdg_surface->toplevel;
@@ -778,7 +749,6 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 	wl_signal_add(&toplevel->events.request_move, &view->request_move);
 	view->request_resize.notify = xdg_toplevel_request_resize;
 	wl_signal_add(&toplevel->events.request_resize, &view->request_resize);
-
 }
 
 int main(int argc, char *argv[]) {
