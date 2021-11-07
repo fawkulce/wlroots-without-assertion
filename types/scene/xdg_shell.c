@@ -12,6 +12,7 @@ struct wlr_scene_xdg_popup {
 	struct wl_listener popup_map;
 	struct wl_listener popup_unmap;
 	struct wl_listener popup_ack_configure;
+	struct wl_listener popup_commit;
 };
 
 static void scene_popup_handle_tree_destroy(struct wl_listener *listener,
@@ -34,20 +35,6 @@ static void scene_popup_handle_popup_destroy(struct wl_listener *listener,
 	wlr_scene_node_destroy(&scene_popup->tree->node);
 }
 
-static void scene_popup_handle_popup_map(struct wl_listener *listener,
-		void *data) {
-	struct wlr_scene_xdg_popup *scene_popup =
-		wl_container_of(listener, scene_popup, popup_map);
-	wlr_scene_node_set_enabled(&scene_popup->tree->node, true);
-}
-
-static void scene_popup_handle_popup_unmap(struct wl_listener *listener,
-		void *data) {
-	struct wlr_scene_xdg_popup *scene_popup =
-		wl_container_of(listener, scene_popup, popup_unmap);
-	wlr_scene_node_set_enabled(&scene_popup->tree->node, false);
-}
-
 static void scene_popup_update_position(
 		struct wlr_scene_xdg_popup *scene_popup) {
 	struct wlr_xdg_popup *popup = scene_popup->popup;
@@ -56,7 +43,36 @@ static void scene_popup_update_position(
 	wlr_xdg_surface_get_geometry(popup->base, &geo);
 
 	wlr_scene_node_set_position(&scene_popup->tree->node,
-		popup->geometry.x - geo.x, popup->geometry.y - geo.y);
+		popup->geometry.x, popup->geometry.y);
+	wlr_scene_node_set_position(scene_popup->surface_node, -geo.x, -geo.y);
+}
+
+static void scene_popup_handle_popup_commit(struct wl_listener *listener,
+		void *data) {
+	struct wlr_scene_xdg_popup *scene_popup =
+		wl_container_of(listener, scene_popup, popup_commit);
+	// xdg surface geometry may have changed.
+	scene_popup_update_position(scene_popup);
+}
+
+static void scene_popup_handle_popup_map(struct wl_listener *listener,
+		void *data) {
+	struct wlr_scene_xdg_popup *scene_popup =
+		wl_container_of(listener, scene_popup, popup_map);
+	wlr_scene_node_set_enabled(&scene_popup->tree->node, true);
+
+	scene_popup->popup_commit.notify = scene_popup_handle_popup_commit;
+	wl_signal_add(&scene_popup->popup->base->surface->events.commit,
+		&scene_popup->popup_commit);
+}
+
+static void scene_popup_handle_popup_unmap(struct wl_listener *listener,
+		void *data) {
+	struct wlr_scene_xdg_popup *scene_popup =
+		wl_container_of(listener, scene_popup, popup_unmap);
+	wlr_scene_node_set_enabled(&scene_popup->tree->node, false);
+
+	wl_list_remove(&scene_popup->popup_commit.link);
 }
 
 static void scene_popup_handle_popup_ack_configure(struct wl_listener *listener,
