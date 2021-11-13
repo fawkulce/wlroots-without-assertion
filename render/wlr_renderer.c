@@ -211,24 +211,6 @@ bool wlr_renderer_init_wl_display(struct wlr_renderer *r,
 		return false;
 	}
 
-	bool argb8888 = false, xrgb8888 = false;
-	for (size_t i = 0; i < len; ++i) {
-		// ARGB8888 and XRGB8888 must be supported and are implicitly
-		// advertised by wl_display_init_shm
-		enum wl_shm_format fmt = convert_drm_format_to_wl_shm(formats[i]);
-		switch (fmt) {
-		case WL_SHM_FORMAT_ARGB8888:
-			argb8888 = true;
-			break;
-		case WL_SHM_FORMAT_XRGB8888:
-			xrgb8888 = true;
-			break;
-		default:
-			wl_display_add_shm_format(wl_display, fmt);
-		}
-	}
-	assert(argb8888 && xrgb8888);
-
 	if (wlr_renderer_get_dmabuf_texture_formats(r) != NULL) {
 		if (wlr_renderer_get_drm_fd(r) >= 0) {
 			if (wlr_drm_create(wl_display, r) == NULL) {
